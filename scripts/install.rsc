@@ -1,63 +1,41 @@
 # ============================================================
-# One-shot install: paste into RouterOS Terminal (v7)
+# One-shot install (v7): pasted into RouterOS Terminal.
+# Requires internet access to raw.githubusercontent.com.
+# Idempotent: safe to re-run, removes old entries first.
 # ============================================================
 
-# --- 1. Main update script ---
-/system script add name="ros-auto-update" policy=read,write,reboot,policy,test source=":local maxWaitLoops 24;\r\
-:local checkStatus \"\";\r\
-:log info \"RouterOS auto-update: checking for updates...\";\r\
-/system package update check-for-updates;\r\
-:local i 0;\r\
-:set checkStatus [/system package update get status];\r\
-:while (($i < $maxWaitLoops) && ($checkStatus ~ \"checking\")) do={\r\
-    :delay 5s;\r\
-    :set i ($i + 1);\r\
-    :set checkStatus [/system package update get status];\r\
-}\r\
-:local installedVer [/system package update get installed-version];\r\
-:local latestVer [/system package update get latest-version];\r\
-:log info (\"RouterOS auto-update: installed=\" . $installedVer . \", latest=\" . $latestVer . \", status=\" . $checkStatus);\r\
-:if (($latestVer = \"\") || ($latestVer = \"unknown\")) do={\r\
-    :log error (\"RouterOS auto-update: update check failed. Status: \" . $checkStatus);\r\
-} else={\r\
-    :if ($installedVer != $latestVer) do={\r\
-        :log info (\"RouterOS auto-update: new version available: \" . $installedVer . \" -> \" . $latestVer);\r\
-        /system package update install;\r\
-    } else={\r\
-        :log info (\"RouterOS auto-update: system is already up to date. Version: \" . $installedVer);\r\
-    }\r\
-}"
+:local baseUrl "https://raw.githubusercontent.com/phaeton35/mikrotik-autoupdate/main/scripts"
 
-# --- 2. Post-boot firmware script ---
-/system script add name="ros-fw-auto-upgrade" policy=read,write,reboot,policy,test source=":delay 120s;\r\
-:local isRB false;\r\
-:do {\r\
-    :if ([/system routerboard get routerboard] = true) do={ :set isRB true }\r\
-} on-error={}\r\
-:if ($isRB) do={\r\
-    :local cf [/system routerboard get current-firmware];\r\
-    :local uf [/system routerboard get upgrade-firmware];\r\
-    :if ($cf != $uf) do={\r\
-        :log warning (\"RouterOS post-update: firmware \" . $cf . \" -> \" . $uf . \", upgrading and rebooting.\");\r\
-        /system routerboard upgrade;\r\
-        :delay 10s;\r\
-        /system reboot;\r\
-    } else={\r\
-        :log info (\"RouterOS post-update: firmware is up to date (\" . $cf . \").\");\r\
-    }\r\
-} else={\r\
-    :log info \"RouterOS post-update: not a RouterBOARD, skipping firmware check.\";\r\
-}"
+# --- 0. Clean up old entries (idempotent reinstall) ---
+:do { /system script remove [find name="ros-auto-update"] } on-error={}
+:do { /system script remove [find name="ros-fw-auto-upgrade"] } on-error={}
+:do { /system scheduler remove [find name="ros-auto-update"] } on-error={}
+:do { /system scheduler remove [find name="ros-fw-upgrade-at-boot"] } on-error={}
 
-# --- 3. Startup scheduler (permanent, never toggled) ---
-/system scheduler add name="ros-fw-upgrade-at-boot" start-time=startup interval=0s \
-    on-event="/system script run ros-fw-auto-upgrade" \
-    policy=read,write,reboot,policy,test comment="Firmware check after every boot"
+# --- 1. Fetch script files from GitHub raw ---
+:log info "Install: fetching scripts from GitHub..."
+/tool fetch url=($baseUrl . "/ros-auto-update.rsc") dst-path="ros-auto-update.rsc"
+/tool fetch url=($baseUrl . "/ros-fw-auto-upgrade.rsc") dst-path="ros-fw-auto-upgrade.rsc"
+:delay 2s
 
-# --- 4. Weekly update scheduler ---
-/system scheduler add name="ros-auto-update" interval=7d start-time=03:30:00 \
-    on-event="/system script run ros-auto-update" \
-    policy=read,write,reboot,policy,test comment="Weekly RouterOS update check"
+:if ([:len [/file find name="ros-auto-update.rsc"]] = 0 || [:len [/file find name="ros-fw-auto-upgrade.rsc"]] = 0) do={
+    :log error "Install: fetch failed. Check internet/DNS. For offline use install-offline.rsc."
+    :error "Install: fetch failed"
+}
 
-# --- 5. First run ---
+# --- 2. Create scripts from file contents (keeps proper multiline) ---
+/system script add name="ros-auto-update" policy=read,write,reboot,policy,test source=[/file get "ros-auto-update.rsc" contents]
+/system script add name="ros-fw-auto-upgrade" policy=read,write,reboot,policy,test source=[/file get "ros-fw-auto-upgrade.rsc" contents]
+
+# --- 3. Schedulers ---
+/system scheduler add name="ros-fw-upgrade-at-boot" start-time=startup interval=0s on-event="/system script run ros-fw-auto-upgrade" policy=read,write,reboot,policy,test comment="Firmware check after every boot"
+/system scheduler add name="ros-auto-update" interval=7d start-time=03:30:00 on-event="/system script run ros-auto-update" policy=read,write,reboot,policy,test comment="Weekly RouterOS update check"
+
+# --- 4. Cleanup and verify ---
+/file remove [find name="ros-auto-update.rsc"]
+/file remove [find name="ros-fw-auto-upgrade.rsc"]
+
+:log info "Install done. Scripts:"
+/system script print where name="ros-auto-update" || name="ros-fw-auto-upgrade"
+/system scheduler print where name="ros-auto-update" || name="ros-fw-upgrade-at-boot"
 :log info "Install done. Run manually: /system script run ros-auto-update"
