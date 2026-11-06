@@ -39,7 +39,7 @@
 🔴 Типичные ошибки самодельных автообновлений, которых здесь нет:
 
 - **Переключение `disabled=yes/no` у планировщика** — это запись в config при каждой загрузке (износ flash) и single point of failure: если `scheduler set` не выполнится, получится бесконечный цикл перезагрузок.
-- **Динамическое создание скрипта с экранированием `\$var`** — любая ошибка в escape-строке, и post-update скрипт не скомпилируется, вторая перезагрузка не произойдёт.
+- **Динамическое создание скрипта с экранированием `\$var` внутри `source="..."`** — любая ошибка в escape-строке при вставке в Terminal, и post-update скрипт не скомпилируется (или ляжет одной строкой), вторая перезагрузка не произойдёт.
 - **`/system package update cancel` перед `install`** — `install` и так скачивает пакеты после проверки, а cancel может сорвать готовую сессию.
 
 ---
@@ -68,7 +68,8 @@
 |---|---|
 | `scripts/ros-auto-update.rsc` | Основной скрипт: проверка и установка обновлений RouterOS |
 | `scripts/ros-fw-auto-upgrade.rsc` | Стартовый скрипт: прошивка RouterBOARD после загрузки |
-| `scripts/install.rsc` | Скрипты + планировщики одним paste'ом |
+| `scripts/install.rsc` | Онлайн-установка одним paste'ом (fetch с GitHub raw) |
+| `scripts/install-offline.rsc` | Офлайн-установка (файлы загружаются в Files вручную) |
 
 ▸ **RouterOS 7.x (current):** всё проверено на v7, `status` всегда английский (`Checking for updates...`, `New version is available: 7.x`).
 ▸ **RouterOS 6.x (long-term):** скрипт будет работать, но статусы и поля `/system package update` отличаются — проверяйте вручную.
@@ -77,17 +78,31 @@
 
 ## 🚀 Установка (5 минут)
 
-🟢 Откройте **Terminal** в WinBox/WebFig и вставьте содержимое `scripts/install.rsc` целиком. Он создаст:
+🟢 **Ключевой момент:** скрипты создаются из **содержимого файлов** (`source=[/file get ... contents]`), а не из экранированной multiline-строки. Так сохраняются переводы строк и кавычки: скрипты в `/system script` остаются читаемыми и рабочими. Никаких `\r\`-продолжений строк.
 
-- скрипт `ros-auto-update`;
-- скрипт `ros-fw-auto-upgrade`;
-- планировщик `ros-fw-upgrade-at-boot` (startup, постоянный);
-- планировщик `ros-auto-update` (раз в неделю).
+### Онлайн (роутер имеет доступ в интернет)
 
-Затем запустите первую проверку вручную:
+1. Откройте **Terminal** в WinBox/WebFig.
+2. Вставьте содержимое `scripts/install.rsc` целиком: он скачает оба скрипта с GitHub raw, создаст скрипты и планировщики, удалит временные файлы и выведет итог через `print`.
+3. Запустите первую проверку вручную:
 
 ```routeros
 /system script run ros-auto-update
+```
+
+### Офлайн
+
+1. Скачайте `scripts/ros-auto-update.rsc` и `scripts/ros-fw-auto-upgrade.rsc`.
+2. Загрузите оба файла в роутер (WinBox → Files, drag and drop).
+3. Вставьте содержимое `scripts/install-offline.rsc` в Terminal.
+
+Оба варианта идемпотентны: повторный запуск удалит старые записи и создаст новые.
+
+### Проверка после установки 🟢
+
+```routeros
+/system script print where name="ros-auto-update" || name="ros-fw-auto-upgrade"
+/system scheduler print where name="ros-auto-update" || name="ros-fw-upgrade-at-boot"
 ```
 
 💡 Если хотите, чтобы firmware стейджилась автоматически вместе с RouterOS (без явного `/system routerboard upgrade`):
@@ -146,6 +161,7 @@
 | Вторая перезагрузка не происходит | Скрипт `ros-fw-auto-upgrade` не в планировщике startup | `/system scheduler print`; проверить политику `reboot` |
 | `get current-firmware` даёт ошибку | Это CHR/x86 — нет физической прошивки | Норма, скрипт сам пропустит (проверка `routerboard = true`) |
 | Скрипт не устанавливает обновление | `policy` планировщика без `reboot` | `/system scheduler set [find name="ros-auto-update"] policy=read,write,reboot,policy,test` |
+| `install.rsc` падает на fetch | Роутер не может достучаться до raw.githubusercontent.com (DNS/firewall) | Использовать `install-offline.rsc` |
 
 ---
 
